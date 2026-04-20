@@ -195,19 +195,30 @@ def _parse_optional_date(value: str | None) -> pd.Timestamp | None:
 
 def _filter_slim_by_review_period(
     slim: pd.DataFrame,
+    *,
+    mode: str,
     period_start: pd.Timestamp | None,
     period_end: pd.Timestamp | None,
 ) -> pd.DataFrame:
-    """Keep only cases whose earliest Initial Report Date falls within [start, end] (inclusive)."""
-    if period_start is None and period_end is None:
-        return slim
+    """
+    Case is kept if its earliest Initial Report Date in the file matches the mode.
 
+    - cumulative: earliest IRD <= end (no lower bound; all history up to end date).
+    - interval: start <= earliest IRD <= end (inclusive).
+    """
     agg0, _, _ = _case_drug_event_sets(slim)
     ir = pd.to_datetime(agg0["initial_report_date"])
     mask = pd.Series(True, index=agg0.index)
-    if period_start is not None:
+    if mode == "cumulative":
+        if period_end is None:
+            raise ValueError("Cumulative evaluation requires a review period end date.")
+        mask &= ir.dt.normalize() <= period_end
+    else:
+        if period_start is None or period_end is None:
+            raise ValueError(
+                "Interval evaluation requires both review period start and end dates."
+            )
         mask &= ir.dt.normalize() >= period_start
-    if period_end is not None:
         mask &= ir.dt.normalize() <= period_end
     keep = set(agg0.loc[mask, "case_id"])
     out = slim[slim["case_id"].isin(keep)].copy()
@@ -236,19 +247,36 @@ def analyze_excel(
     content: bytes,
     *,
     drug_name: str | None = None,
+    evaluation_mode: str = "interval",
     period_start: str | None = None,
     period_end: str | None = None,
 ) -> dict[str, Any]:
-    ps = _parse_optional_date(period_start)
-    pe = _parse_optional_date(period_end)
-    if ps is not None and pe is not None and ps > pe:
-        raise ValueError("Review period start must be on or before end.")
+    mode = (evaluation_mode or "interval").strip().lower()
+    if mode not in ("cumulative", "interval"):
+        raise ValueError("evaluation_mode must be 'cumulative' or 'interval'.")
+
+    ps: pd.Timestamp | None
+    pe: pd.Timestamp | None
+    if mode == "cumulative":
+        pe = _parse_optional_date(period_end)
+        if pe is None:
+            raise ValueError("Cumulative evaluation requires a review period end date.")
+        ps = None
+    else:
+        ps = _parse_optional_date(period_start)
+        pe = _parse_optional_date(period_end)
+        if ps is None or pe is None:
+            raise ValueError(
+                "Interval evaluation requires both review period start and end dates."
+            )
+        if ps > pe:
+            raise ValueError("Review period start must be on or before end.")
 
     slim = read_cases_from_excel(content)
     if slim.empty:
         raise ValueError("No valid rows after parsing (need Case ID, drug, and event).")
 
-    slim = _filter_slim_by_review_period(slim, ps, pe)
+    slim = _filter_slim_by_review_period(slim, mode=mode, period_start=ps, period_end=pe)
     if slim.empty:
         raise ValueError("No cases fall within the selected review period.")
 
@@ -292,6 +320,7 @@ def analyze_excel(
         "pairs_analyzed": len(rows),
         "signals": rows,
         "filters": {
+            "evaluation_mode": mode,
             "drug_name": (str(drug_name).strip() or None) if drug_name is not None else None,
             "review_period_start": ps.isoformat() if ps is not None else None,
             "review_period_end": pe.isoformat() if pe is not None else None,

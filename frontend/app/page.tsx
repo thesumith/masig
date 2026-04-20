@@ -35,6 +35,7 @@ type AnalyzeResponse = {
   pairs_analyzed: number;
   signals: SignalRow[];
   filters: {
+    evaluation_mode: "cumulative" | "interval";
     drug_name: string | null;
     review_period_start: string | null;
     review_period_end: string | null;
@@ -68,6 +69,7 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [metadata, setMetadata] = useState<ExcelMetadata | null>(null);
   const [drugName, setDrugName] = useState("");
+  const [evaluationMode, setEvaluationMode] = useState<"cumulative" | "interval">("interval");
   const [periodStart, setPeriodStart] = useState("");
   const [periodEnd, setPeriodEnd] = useState("");
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
@@ -91,6 +93,7 @@ export default function Home() {
       const data: ExcelMetadata = await res.json();
       setMetadata(data);
       setDrugName("");
+      setEvaluationMode("interval");
       setPeriodStart(isoToDateInput(data.min_date));
       setPeriodEnd(isoToDateInput(data.max_date));
     } catch (e) {
@@ -118,7 +121,11 @@ export default function Home() {
       const body = new FormData();
       body.append("file", file);
       body.append("drug_name", drugName);
-      body.append("review_period_start", periodStart);
+      body.append("evaluation_mode", evaluationMode);
+      body.append(
+        "review_period_start",
+        evaluationMode === "cumulative" ? "" : periodStart,
+      );
       body.append("review_period_end", periodEnd);
       const res = await fetch(`${API_BASE}/analyze-signals`, {
         method: "POST",
@@ -176,6 +183,52 @@ export default function Home() {
 
         <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <h2 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">2. Scope</h2>
+          <fieldset className="mt-4">
+            <legend className="text-sm font-medium">Statistical evaluation</legend>
+            <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:gap-6">
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="eval-mode"
+                  checked={evaluationMode === "cumulative"}
+                  onChange={() => {
+                    setEvaluationMode("cumulative");
+                    setPeriodStart("");
+                  }}
+                  disabled={!metadata}
+                  className="h-4 w-4"
+                />
+                <span>
+                  <span className="font-medium">Cumulative</span>
+                  <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                    All cases with earliest report on or before the end date (start not used).
+                  </span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="eval-mode"
+                  checked={evaluationMode === "interval"}
+                  onChange={() => {
+                    setEvaluationMode("interval");
+                    if (metadata) {
+                      setPeriodStart(isoToDateInput(metadata.min_date));
+                      setPeriodEnd(isoToDateInput(metadata.max_date));
+                    }
+                  }}
+                  disabled={!metadata}
+                  className="h-4 w-4"
+                />
+                <span>
+                  <span className="font-medium">Interval</span>
+                  <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                    Only cases whose earliest report falls between start and end (inclusive).
+                  </span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
           <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <label htmlFor="drug" className="block text-sm font-medium">
@@ -199,19 +252,25 @@ export default function Home() {
             <div>
               <label htmlFor="start" className="block text-sm font-medium">
                 Review period start
+                {evaluationMode === "cumulative" && (
+                  <span className="ml-1 font-normal text-zinc-400">(not applicable)</span>
+                )}
               </label>
               <input
                 id="start"
                 type="date"
-                value={periodStart}
+                value={evaluationMode === "cumulative" ? "" : periodStart}
                 onChange={(e) => setPeriodStart(e.target.value)}
-                disabled={!metadata}
-                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-950 disabled:opacity-50"
+                disabled={!metadata || evaluationMode === "cumulative"}
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-950 disabled:cursor-not-allowed disabled:opacity-50"
               />
             </div>
             <div>
               <label htmlFor="end" className="block text-sm font-medium">
                 Review period end
+                {evaluationMode === "cumulative" && (
+                  <span className="ml-1 font-normal text-zinc-500">(required)</span>
+                )}
               </label>
               <input
                 id="end"
@@ -224,8 +283,7 @@ export default function Home() {
             </div>
           </div>
           <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
-            Cases are included if their earliest initial report date in the file falls within the
-            period (inclusive). Leave dates empty to use all report dates.
+            Each case uses its <strong className="font-medium text-zinc-600 dark:text-zinc-300">earliest</strong> initial report date in the file. Cumulative: include all cases with that date on or before the end date. Interval: include only when that date is between start and end (inclusive).
           </p>
           <button
             type="button"
@@ -250,9 +308,15 @@ export default function Home() {
           <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <h2 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">3. Results</h2>
             <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-              {result.pairs_analyzed} pair(s) · {result.total_cases} cases in scope · filters:{" "}
+              {result.pairs_analyzed} pair(s) · {result.total_cases} cases in scope ·{" "}
+              <span className="font-medium capitalize">{result.filters.evaluation_mode}</span>
+              {" · "}
               {result.filters.drug_name ?? "all drugs"}
-              {result.filters.review_period_start || result.filters.review_period_end
+              {result.filters.evaluation_mode === "cumulative" && result.filters.review_period_end
+                ? ` · up to ${result.filters.review_period_end.slice(0, 10)}`
+                : ""}
+              {result.filters.evaluation_mode === "interval" &&
+              (result.filters.review_period_start || result.filters.review_period_end)
                 ? ` · ${result.filters.review_period_start?.slice(0, 10) ?? "…"} → ${result.filters.review_period_end?.slice(0, 10) ?? "…"}`
                 : ""}
             </p>

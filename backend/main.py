@@ -38,6 +38,7 @@ async def excel_metadata(file: UploadFile = File(...)):
 async def analyze_signals(
     file: UploadFile = File(...),
     drug_name: str = Form(""),
+    evaluation_mode: str = Form("interval"),
     review_period_start: str = Form(""),
     review_period_end: str = Form(""),
 ):
@@ -45,8 +46,10 @@ async def analyze_signals(
     Upload an Excel (.xlsx) file with columns including:
     Case ID, Initial Report Date, Suspected Product, Adverse Event (PT).
 
-    Optional: filter by suspected product (drug) and review period (Initial Report Date
-    per case, earliest date in the file). Returns PRR, ROR, chi-square, and EBGM.
+    evaluation_mode: 'cumulative' — end date only; cases from all dates up to and including
+    end. 'interval' — start and end; cases whose earliest report date falls in [start, end].
+
+    Optional drug filter. Returns PRR, ROR, chi-square, and EBGM.
     """
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm")):
         raise HTTPException(
@@ -58,6 +61,7 @@ async def analyze_signals(
         return analyze_excel(
             content,
             drug_name=drug_name or None,
+            evaluation_mode=evaluation_mode,
             period_start=review_period_start or None,
             period_end=review_period_end or None,
         )
