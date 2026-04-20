@@ -1,64 +1,303 @@
-import Image from "next/image";
+"use client";
+
+import { useCallback, useState, type ChangeEvent } from "react";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+
+type ExcelMetadata = {
+  drugs: string[];
+  min_date: string | null;
+  max_date: string | null;
+  total_cases: number;
+  total_rows: number;
+};
+
+type SignalRow = {
+  suspected_product: string;
+  adverse_event_pt: string;
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  prr: number | null;
+  ror: number | null;
+  chi_square: number | null;
+  chi_square_p_value: number | null;
+  ebgm: number | null;
+  expected_count: number | null;
+  n_cases: number;
+  initial_report_date_earliest: string | null;
+};
+
+type AnalyzeResponse = {
+  total_cases: number;
+  total_rows: number;
+  pairs_analyzed: number;
+  signals: SignalRow[];
+  filters: {
+    drug_name: string | null;
+    review_period_start: string | null;
+    review_period_end: string | null;
+  };
+};
+
+function isoToDateInput(iso: string | null): string {
+  if (!iso) return "";
+  return iso.slice(0, 10);
+}
+
+function formatNum(v: number | null | undefined, digits = 4): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return v.toFixed(digits);
+}
+
+async function readErrorDetail(res: Response): Promise<string> {
+  try {
+    const data = await res.json();
+    if (typeof data.detail === "string") return data.detail;
+    if (Array.isArray(data.detail)) {
+      return data.detail.map((e: { msg?: string }) => e.msg ?? JSON.stringify(e)).join("; ");
+    }
+    return JSON.stringify(data);
+  } catch {
+    return res.statusText || "Request failed";
+  }
+}
 
 export default function Home() {
+  const [file, setFile] = useState<File | null>(null);
+  const [metadata, setMetadata] = useState<ExcelMetadata | null>(null);
+  const [drugName, setDrugName] = useState("");
+  const [periodStart, setPeriodStart] = useState("");
+  const [periodEnd, setPeriodEnd] = useState("");
+  const [result, setResult] = useState<AnalyzeResponse | null>(null);
+  const [loadingMeta, setLoadingMeta] = useState(false);
+  const [loadingRun, setLoadingRun] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadMetadata = useCallback(async (f: File) => {
+    setLoadingMeta(true);
+    setError(null);
+    setMetadata(null);
+    setResult(null);
+    try {
+      const body = new FormData();
+      body.append("file", f);
+      const res = await fetch(`${API_BASE}/excel-metadata`, {
+        method: "POST",
+        body,
+      });
+      if (!res.ok) throw new Error(await readErrorDetail(res));
+      const data: ExcelMetadata = await res.json();
+      setMetadata(data);
+      setDrugName("");
+      setPeriodStart(isoToDateInput(data.min_date));
+      setPeriodEnd(isoToDateInput(data.max_date));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to read file");
+    } finally {
+      setLoadingMeta(false);
+    }
+  }, []);
+
+  const onFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    setFile(f ?? null);
+    if (f) void loadMetadata(f);
+  };
+
+  const runAnalysis = async () => {
+    if (!file) {
+      setError("Choose an Excel file first.");
+      return;
+    }
+    setLoadingRun(true);
+    setError(null);
+    setResult(null);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      body.append("drug_name", drugName);
+      body.append("review_period_start", periodStart);
+      body.append("review_period_end", periodEnd);
+      const res = await fetch(`${API_BASE}/analyze-signals`, {
+        method: "POST",
+        body,
+      });
+      if (!res.ok) throw new Error(await readErrorDetail(res));
+      const data: AnalyzeResponse = await res.json();
+      setResult(data);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Analysis failed");
+    } finally {
+      setLoadingRun(false);
+    }
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="min-h-full flex flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+      <header className="border-b border-zinc-200 bg-white px-6 py-5 dark:border-zinc-800 dark:bg-zinc-900">
+        <h1 className="text-xl font-semibold tracking-tight">Disproportionality analysis</h1>
+        <p className="mt-1 max-w-2xl text-sm text-zinc-600 dark:text-zinc-400">
+          Upload a line listing (Excel), choose a suspected product and review period (initial
+          report dates), then run PRR, ROR, χ², and EBGM for each adverse event.
+        </p>
+      </header>
+
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 px-6 py-8">
+        <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <h2 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">1. Data</h2>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <label htmlFor="file" className="block text-sm font-medium">
+                Excel file (.xlsx)
+              </label>
+              <input
+                id="file"
+                type="file"
+                accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                onChange={onFileChange}
+                className="mt-1 block w-full text-sm file:mr-4 file:rounded-lg file:border-0 file:bg-zinc-900 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-zinc-800 dark:file:bg-zinc-100 dark:file:text-zinc-900"
+              />
+            </div>
+            {loadingMeta && (
+              <p className="text-sm text-zinc-500">Reading file…</p>
+            )}
+          </div>
+          {metadata && (
+            <p className="mt-3 text-sm text-zinc-600 dark:text-zinc-400">
+              <span className="font-medium text-zinc-800 dark:text-zinc-200">{metadata.total_cases}</span>{" "}
+              cases,{" "}
+              <span className="font-medium text-zinc-800 dark:text-zinc-200">{metadata.total_rows}</span>{" "}
+              rows — {metadata.drugs.length} distinct suspected products.
+            </p>
+          )}
+        </section>
+
+        <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <h2 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">2. Scope</h2>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div>
+              <label htmlFor="drug" className="block text-sm font-medium">
+                Suspected product
+              </label>
+              <select
+                id="drug"
+                value={drugName}
+                onChange={(e) => setDrugName(e.target.value)}
+                disabled={!metadata}
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-950 disabled:opacity-50"
+              >
+                <option value="">All drugs (every drug–event pair)</option>
+                {metadata?.drugs.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label htmlFor="start" className="block text-sm font-medium">
+                Review period start
+              </label>
+              <input
+                id="start"
+                type="date"
+                value={periodStart}
+                onChange={(e) => setPeriodStart(e.target.value)}
+                disabled={!metadata}
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-950 disabled:opacity-50"
+              />
+            </div>
+            <div>
+              <label htmlFor="end" className="block text-sm font-medium">
+                Review period end
+              </label>
+              <input
+                id="end"
+                type="date"
+                value={periodEnd}
+                onChange={(e) => setPeriodEnd(e.target.value)}
+                disabled={!metadata}
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-600 dark:bg-zinc-950 disabled:opacity-50"
+              />
+            </div>
+          </div>
+          <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+            Cases are included if their earliest initial report date in the file falls within the
+            period (inclusive). Leave dates empty to use all report dates.
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            type="button"
+            onClick={() => void runAnalysis()}
+            disabled={!file || !metadata || loadingRun}
+            className="mt-6 rounded-lg bg-zinc-900 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            {loadingRun ? "Running…" : "Run analysis"}
+          </button>
+        </section>
+
+        {error && (
+          <div
+            role="alert"
+            className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200"
           >
-            Documentation
-          </a>
-        </div>
+            {error}
+          </div>
+        )}
+
+        {result && (
+          <section className="rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <h2 className="text-sm font-medium text-zinc-500 dark:text-zinc-400">3. Results</h2>
+            <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+              {result.pairs_analyzed} pair(s) · {result.total_cases} cases in scope · filters:{" "}
+              {result.filters.drug_name ?? "all drugs"}
+              {result.filters.review_period_start || result.filters.review_period_end
+                ? ` · ${result.filters.review_period_start?.slice(0, 10) ?? "…"} → ${result.filters.review_period_end?.slice(0, 10) ?? "…"}`
+                : ""}
+            </p>
+            <div className="mt-4 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-700">
+              <table className="min-w-full text-left text-sm">
+                <thead className="bg-zinc-50 text-xs font-medium uppercase text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  <tr>
+                    <th className="px-3 py-2">Product</th>
+                    <th className="px-3 py-2">Adverse event (PT)</th>
+                    <th className="px-3 py-2">a</th>
+                    <th className="px-3 py-2">b</th>
+                    <th className="px-3 py-2">c</th>
+                    <th className="px-3 py-2">d</th>
+                    <th className="px-3 py-2">PRR</th>
+                    <th className="px-3 py-2">ROR</th>
+                    <th className="px-3 py-2">χ²</th>
+                    <th className="px-3 py-2">p</th>
+                    <th className="px-3 py-2">EBGM</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                  {result.signals.map((row) => (
+                    <tr key={`${row.suspected_product}-${row.adverse_event_pt}`} className="hover:bg-zinc-50/80 dark:hover:bg-zinc-800/50">
+                      <td className="max-w-[140px] truncate px-3 py-2 font-medium" title={row.suspected_product}>
+                        {row.suspected_product}
+                      </td>
+                      <td className="max-w-[200px] truncate px-3 py-2" title={row.adverse_event_pt}>
+                        {row.adverse_event_pt}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums">{row.a}</td>
+                      <td className="px-3 py-2 tabular-nums">{row.b}</td>
+                      <td className="px-3 py-2 tabular-nums">{row.c}</td>
+                      <td className="px-3 py-2 tabular-nums">{row.d}</td>
+                      <td className="px-3 py-2 tabular-nums">{formatNum(row.prr)}</td>
+                      <td className="px-3 py-2 tabular-nums">{formatNum(row.ror)}</td>
+                      <td className="px-3 py-2 tabular-nums">{formatNum(row.chi_square)}</td>
+                      <td className="px-3 py-2 tabular-nums">{formatNum(row.chi_square_p_value, 6)}</td>
+                      <td className="px-3 py-2 tabular-nums">{formatNum(row.ebgm)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );
